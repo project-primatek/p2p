@@ -1,171 +1,144 @@
 # Protein-Protein Interaction Prediction
 
-AI-powered system to predict protein-protein interactions using AlphaFold structures and graph neural networks.
+Predict protein-protein interactions using AlphaFold structures and machine learning.
 
-## 🎯 Project Goals
+## Goal
 
-1. **Download AlphaFold Database** - Access structural data for millions of proteins
-2. **Integrate Interaction Databases** - Use STRING, BioGRID, IntAct for training data
-3. **Build GNN Model** - Graph neural network to predict protein binding
-4. **Visualize Complexes** - 3D visualization of protein interactions
+Build a machine learning model that predicts whether two proteins interact, using:
+- **3D protein structures** from AlphaFold as input features
+- **Known interactions** from STRING database as training labels
 
-## 🏗️ Architecture
+## Datasets
 
-```
-Input: Protein Structures (AlphaFold)
-   ↓
-Feature Extraction (sequence, structure, surface properties)
-   ↓
-Graph Neural Network (protein-protein interaction prediction)
-   ↓
-Output: Interaction probability + binding site prediction
-```
+### AlphaFold Database
+- Source: https://alphafold.ebi.ac.uk/
+- Contains: Predicted 3D structures for 200M+ proteins
+- Format: PDB files with atomic coordinates
+- Use: Extract structural features (surface properties, binding sites, shape)
 
-## 📊 Datasets
+### STRING Database
+- Source: https://string-db.org/
+- Contains: Known and predicted protein-protein interactions
+- Format: Protein pairs with confidence scores (0-1000)
+- Use: Training labels (interacting vs non-interacting pairs)
 
-- **AlphaFold DB**: 200M+ protein structures
-- **STRING**: Known protein interactions (experimental + predicted)
-- **BioGRID**: Curated protein interactions
-- **PDB**: Experimentally solved protein complexes
+## Download Data
 
-## 🚀 Quick Start
+### 1. Download Proteome + AlphaFold Structures
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Download all proteins and structures for a species
+python download_proteome.py --species "Mycoplasma genitalium"
 
-# Download sample data
-python download_data.py --sample
+# For larger organisms, use more threads
+python download_proteome.py --species "Homo sapiens" --threads 20
 
-# Train model
-python train_ppi_model.py
-
-# Predict interactions
-python predict_interactions.py --protein1 P53 --protein2 MDM2
+# Or use UniProt proteome ID directly
+python download_proteome.py --uniprot-id UP000000807
 ```
 
-## 📁 Project Structure
+Output:
+- `data/{species}/proteins.fasta` - All protein sequences
+- `data/{species}/structures/` - AlphaFold PDB files
+
+### 2. Download STRING Interactions
+
+```bash
+# Download interactions for a species
+python download_string.py --species "Mycoplasma genitalium"
+
+# Filter by confidence score (700+ = high confidence)
+python download_string.py --taxon-id 9606 --score 700
+```
+
+Output:
+- `data/{species}/string/string_interactions.tsv` - Interaction pairs with scores
+
+## ML Approach
+
+### Data Preparation
+
+1. **Positive samples**: Protein pairs from STRING with high confidence scores (≥700)
+2. **Negative samples**: Random protein pairs not in STRING (or low confidence <150)
+3. **Train/test split**: 80/20, ensuring no protein leakage between sets
+
+### Feature Extraction (per protein)
+
+From AlphaFold PDB structures:
+- **Geometric**: Surface area, volume, radius of gyration
+- **Chemical**: Charge distribution, hydrophobicity patches
+- **Structural**: Secondary structure composition, exposed residues
+- **Sequence**: Amino acid frequencies, length
+
+For protein pairs:
+- Concatenate or compare individual features
+- Surface complementarity scores
+- Docking-based features (optional)
+
+### Model Architecture
+
+**Option 1: Classical ML**
+```
+Protein A features + Protein B features → Random Forest / XGBoost → Interaction probability
+```
+
+**Option 2: Graph Neural Network**
+```
+Protein A graph + Protein B graph → GNN encoder → Pair embedding → MLP → Interaction probability
+```
+
+Where each protein is a graph:
+- Nodes = amino acid residues
+- Edges = spatial contacts (Cα distance < 8Å)
+- Node features = residue properties
+
+### Training
+
+```python
+# Pseudocode
+for protein_a, protein_b, label in dataloader:
+    feat_a = extract_features(protein_a)
+    feat_b = extract_features(protein_b)
+    pred = model(feat_a, feat_b)
+    loss = binary_cross_entropy(pred, label)
+    loss.backward()
+```
+
+### Evaluation Metrics
+- AUROC, AUPRC (handles class imbalance)
+- Precision, Recall, F1 at various thresholds
+
+## Similar Projects
+
+### GitHub Repositories
+- [DeepPPI](https://github.com/hashemifar/DeepPPI) - CNN-based PPI prediction from sequence
+- [PIPR](https://github.com/muhaochen/seq_ppi) - Siamese RNN for PPI prediction
+- [GNN-PPI](https://github.com/lvguofeng/GNN_PPI) - Graph neural networks for PPI
+- [D-SCRIPT](https://github.com/samsledje/D-SCRIPT) - Structure-aware deep learning for PPI
+- [AlphaFold-Multimer](https://github.com/deepmind/alphafold) - Direct complex structure prediction
+
+### Key Papers
+- Jumper et al. (2021) - "Highly accurate protein structure prediction with AlphaFold" - *Nature*
+- Szklarczyk et al. (2023) - "The STRING database in 2023" - *Nucleic Acids Research*
+- Evans et al. (2022) - "Protein complex prediction with AlphaFold-Multimer" - *bioRxiv*
+- Sledzieski et al. (2021) - "D-SCRIPT: Predicting direct physical interactions" - *Cell Systems*
+- Gainza et al. (2020) - "Deciphering interaction fingerprints from protein molecular surfaces" - *Nature Methods*
+
+## Project Structure
 
 ```
-project-g23/
+p2p/
 ├── data/
-│   ├── alphafold/          # AlphaFold structures (.pdb files)
-│   ├── string/             # STRING interaction database
-│   └── biogrid/            # BioGRID interaction data
-├── models/
-│   ├── gnn_model.py        # Graph neural network
-│   ├── feature_extractor.py
-│   └── protein_encoder.py
-├── utils/
-│   ├── download_alphafold.py
-│   ├── parse_pdb.py
-│   └── visualization.py
-├── notebooks/
-│   └── exploration.ipynb
-└── scripts/
-    ├── train.py
-    └── predict.py
+│   └── {species}/
+│       ├── proteins.fasta
+│       ├── sequences/
+│       ├── structures/
+│       └── string/
+├── download_proteome.py
+├── download_string.py
+└── requirements.txt
 ```
 
-## 🧠 Model Features
+## License
 
-### Input Features (per protein)
-- **Sequence**: Amino acid sequence
-- **Structure**: 3D coordinates from AlphaFold
-- **Surface**: Exposed residues, pockets
-- **Biochemical**: Charge, hydrophobicity, polarity
-- **Evolutionary**: Conservation scores
-
-### GNN Architecture
-- Node features: Residue-level properties
-- Edge features: Spatial distances, bonds
-- Graph pooling: Protein-level embedding
-- Interaction predictor: MLP on concatenated embeddings
-
-## 📈 Expected Results
-
-- **Accuracy**: 80-90% on known interactions (STRING database)
-- **Novel predictions**: Discover new protein interactions
-- **Binding sites**: Predict interaction interfaces
-- **Applications**: Drug target discovery, pathway analysis
-
-## 🛠️ Tech Stack
-
-- **PyTorch**: Deep learning framework
-- **PyTorch Geometric**: Graph neural networks
-- **BioPython**: Protein structure parsing
-- **py3Dmol**: 3D visualization
-- **pandas**: Data processing
-- **numpy**: Numerical computations
-
-## 🎓 Scientific Background
-
-### Why Protein-Protein Interactions Matter
-- **Drug Discovery**: 40% of drugs target protein interactions
-- **Disease Understanding**: Many diseases caused by aberrant interactions
-- **Systems Biology**: Understanding cellular networks
-
-### AlphaFold Revolution
-- Solved protein folding problem
-- 200M+ structures now available
-- Enables large-scale interaction prediction
-
-## 📝 TODO
-
-- [ ] Download AlphaFold structures for key proteins
-- [ ] Parse STRING database
-- [ ] Build initial GNN model
-- [ ] Train on known interactions
-- [ ] Validate on test set
-- [ ] Build web interface for predictions
-- [ ] Deploy model
-
-## 🔬 Example Use Cases
-
-### 1. Drug Target Discovery
-```python
-# Find proteins that interact with disease target
-target = "P53"  # Tumor suppressor
-candidates = predict_interactors(target)
-# Output: MDM2, MDM4, etc. (known oncology targets)
-```
-
-### 2. Pathway Analysis
-```python
-# Map complete interaction network
-proteins = ["BRCA1", "BRCA2", "TP53", "ATM"]
-network = build_interaction_network(proteins)
-visualize_network(network)
-```
-
-### 3. Binding Site Prediction
-```python
-# Where do proteins bind?
-protein_a = load_structure("P53")
-protein_b = load_structure("MDM2")
-binding_site = predict_interface(protein_a, protein_b)
-visualize_complex(protein_a, protein_b, binding_site)
-```
-
-## 📚 References
-
-- **AlphaFold**: Jumper et al., Nature 2021
-- **STRING**: Szklarczyk et al., Nucleic Acids Research 2023
-- **GNN Review**: Zhou et al., AI Open 2020
-- **PPI Prediction**: Zhang et al., Bioinformatics 2022
-
-## 🤝 Contributing
-
-This is a research project. Contributions welcome!
-
-## 📄 License
-
-MIT License - Use freely for research and commercial applications
-
----
-
-**Status**: 🚧 Under active development
-
-**Contact**: Research project for protein interaction prediction
-
-**Last Updated**: November 2024
+MIT
