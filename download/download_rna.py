@@ -24,7 +24,8 @@ Data Sources:
 """
 
 import argparse
-import gzip
+import zipfile
+import csv
 import json
 import random
 import sys
@@ -44,7 +45,7 @@ if hasattr(sys.stdout, "reconfigure"):
 # =============================================================================
 
 # ATtRACT database
-ATTRACT_URL = "https://attract.cnic.es/attract/static/ATtRACT_db.txt.gz"
+ATTRACT_URL = "https://attract.cnic.es/attract/static/ATtRACT.zip"
 
 # RNAcentral
 RNACENTRAL_API_URL = "https://rnacentral.org/api/v1"
@@ -210,7 +211,8 @@ def download_attract_database(output_dir: Path) -> Dict[str, List[Dict]]:
     attract_dir = output_dir / "attract"
     attract_dir.mkdir(parents=True, exist_ok=True)
 
-    db_file = attract_dir / "ATtRACT_db.txt.gz"
+    db_file = attract_dir / "ATtRACT.zip"
+    db_txt_file ='ATtRACT_db.txt'
 
     # Download the database
     if not db_file.exists():
@@ -245,38 +247,40 @@ def download_attract_database(output_dir: Path) -> Dict[str, List[Dict]]:
     all_motifs: List[Dict] = []
 
     try:
-        with gzip.open(db_file, "rt") as f:
-            # Skip header
-            header = f.readline().strip().split("\t")
+        with zipfile.ZipFile(db_file, 'r') as zip_file:
+            path = zipfile.Path(zip_file, at=db_txt_file)
+            # Open the file in text mode with tab delimiter
+            with path.open(encoding="utf-8", newline="") as f:
+                reader = csv.reader(f, delimiter="\t")
 
-            for line in f:
-                parts = line.strip().split("\t")
-                if len(parts) < 6:
-                    continue
+                # Skip header
+                next(reader, None)
 
-                gene_name = parts[0].upper()
-                gene_id = parts[1] if len(parts) > 1 else ""
-                organism = parts[3] if len(parts) > 3 else ""
-                motif = parts[5] if len(parts) > 5 else ""
-                pubmed_id = parts[6] if len(parts) > 6 else ""
+                for parts in reader:
+                    gene_name = parts[0].upper()
+                    gene_id = parts[1] if len(parts) > 1 else ""
+                    organism = parts[3] if len(parts) > 3 else ""
+                    motif = parts[4] if len(parts) > 4 else ""
+                    pubmed_id = parts[8] if len(parts) > 8 else ""
 
-                # Filter for valid motifs
-                if not motif or len(motif) < 3:
-                    continue
+                    print(motif)
+                    # Filter for valid motifs
+                    if not motif or len(motif) < 3:
+                        continue
 
-                motif_data = {
-                    "gene_name": gene_name,
-                    "gene_id": gene_id,
-                    "organism": organism,
-                    "motif": motif,
-                    "pubmed_id": pubmed_id,
-                }
+                    motif_data = {
+                        "gene_name": gene_name,
+                        "gene_id": gene_id,
+                        "organism": organism,
+                        "motif": motif,
+                        "pubmed_id": pubmed_id,
+                    }
 
-                all_motifs.append(motif_data)
+                    all_motifs.append(motif_data)
 
-                if gene_name not in rbp_motifs:
-                    rbp_motifs[gene_name] = []
-                rbp_motifs[gene_name].append(motif_data)
+                    if gene_name not in rbp_motifs:
+                        rbp_motifs[gene_name] = []
+                    rbp_motifs[gene_name].append(motif_data)
 
         print(f"✓ Loaded {len(all_motifs):,} motifs for {len(rbp_motifs):,} RBPs")
 
