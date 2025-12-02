@@ -256,14 +256,13 @@ def download_attract_database(output_dir: Path) -> Dict[str, List[Dict]]:
                 # Skip header
                 next(reader, None)
 
-                for parts in reader:
-                    gene_name = parts[0].upper()
-                    gene_id = parts[1] if len(parts) > 1 else ""
-                    organism = parts[3] if len(parts) > 3 else ""
-                    motif = parts[4] if len(parts) > 4 else ""
-                    pubmed_id = parts[8] if len(parts) > 8 else ""
+                for row in reader:
+                    gene_name = row[0].upper()
+                    gene_id = row[1] if len(row) > 1 else ""
+                    organism = row[3] if len(row) > 3 else ""
+                    motif = row[4] if len(row) > 4 else ""
+                    pubmed_id = row[8] if len(row) > 8 else ""
 
-                    print(motif)
                     # Filter for valid motifs
                     if not motif or len(motif) < 3:
                         continue
