@@ -2,6 +2,8 @@
 
 **Cella Nova** is a comprehensive cell modeling platform that uses deep learning to predict biomolecular interactions. The platform combines protein language models, graph neural networks, and attention mechanisms to model the complex interaction networks within cells.
 
+> **Note**: This platform uses **real experimental data only**. No synthetic or generated sequences are used for training.
+
 ## Features
 
 ### Protein-Protein Interaction (PPI) Prediction
@@ -34,18 +36,21 @@ Predict drug-target interactions and binding affinities using:
 
 ## Data Sources
 
+All data comes from real experimental sources:
+
 ### Proteins
 - **UniProt**: Protein sequences and annotations
 - **AlphaFold**: Predicted 3D protein structures
-- **STRING**: Protein network information
+- **STRING**: Protein-protein interaction networks
 
 ### DNA
-- **JASPAR**: Transcription factor binding motifs
-- **ENCODE**: ChIP-seq binding sites
+- **ENCODE ChIP-seq**: Real transcription factor binding sites from experiments
+- **JASPAR**: Experimentally validated TF binding motifs
 
 ### RNA
-- **ATtRACT**: RNA-binding protein motifs
-- **RNAcentral**: Non-coding RNA sequences
+- **ENCODE eCLIP**: Real RNA-binding protein binding sites from experiments
+- **ATtRACT**: Experimentally validated RNA-binding protein motifs
+- **RNAcentral**: Real non-coding RNA sequences
 
 ### Small Molecules
 - **ChEMBL**: Bioactivity data for drug-like molecules
@@ -68,23 +73,28 @@ pip install -r requirements.txt
 
 ## Usage
 
-### 1. Download Base Data
+### 1. Download Real Data
 
-The platform uses modular download scripts for each data type:
+The platform downloads real experimental data from public databases:
 
 ```bash
 cd cella-nova
 
-# Download protein data
-python -m download.download_pro --species "Homo sapiens" --include-structures
+# Download protein data (UniProt + AlphaFold + STRING)
+python -m download.download_pro --species "Homo sapiens" --include-structures --include-string
 
-# Download DNA data (TF binding motifs)
-python -m download.download_dna --source jaspar --generate-sequences
+# Download DNA data (real TF binding sites)
+python -m download.download_dna --source encode    # ENCODE ChIP-seq data
+python -m download.download_dna --source jaspar    # JASPAR motifs
+python -m download.download_dna --source all       # Both sources
 
-# Download RNA data (RBP binding motifs)
-python -m download.download_rna --source attract --generate-sequences
+# Download RNA data (real RBP binding sites)
+python -m download.download_rna --source encode    # ENCODE eCLIP data
+python -m download.download_rna --source attract   # ATtRACT motifs
+python -m download.download_rna --source rnacentral # RNAcentral sequences
+python -m download.download_rna --source all       # All sources
 
-# Download molecule data
+# Download molecule data (ChEMBL bioactivity data)
 python -m download.download_mol --source chembl --include-activities
 ```
 
@@ -175,7 +185,10 @@ result = p2m_model.predict(protein_seq, smiles)
 ```
 cella-nova/
 ├── data/
-│   ├── pdna/               # Raw protein-DNA data
+│   ├── proteins/           # Raw protein data (UniProt, AlphaFold, STRING)
+│   ├── pdna/               # Raw protein-DNA data (ENCODE, JASPAR)
+│   ├── rna/                # Raw RNA data (ENCODE eCLIP, ATtRACT, RNAcentral)
+│   ├── molecules/          # Raw molecule data (ChEMBL)
 │   └── prepared/           # Prepared training data
 │       ├── p2p/            # Protein-Protein prepared data
 │       ├── p2d/            # Protein-DNA prepared data
@@ -184,9 +197,9 @@ cella-nova/
 ├── download/               # Data download scripts
 │   ├── __init__.py
 │   ├── download_pro.py     # Download protein data
-│   ├── download_dna.py     # Download DNA data
-│   ├── download_rna.py     # Download RNA data
-│   └── download_mol.py     # Download molecule data
+│   ├── download_dna.py     # Download DNA data (ENCODE ChIP-seq, JASPAR)
+│   ├── download_rna.py     # Download RNA data (ENCODE eCLIP, ATtRACT, RNAcentral)
+│   └── download_mol.py     # Download molecule data (ChEMBL)
 ├── prepare/                # Data preparation scripts
 │   ├── __init__.py
 │   ├── prepare_all.py      # Master preparation script
@@ -215,8 +228,8 @@ Downloads protein sequences and structures from UniProt, AlphaFold, and STRING.
 # All proteins for a species
 python -m download.download_pro --species "Homo sapiens"
 
-# With AlphaFold structures
-python -m download.download_pro --species "Homo sapiens" --include-structures --threads 20
+# With AlphaFold structures and STRING interactions
+python -m download.download_pro --species "Homo sapiens" --include-structures --include-string
 
 # Filtered by function
 python -m download.download_pro --species "Homo sapiens" --filter dna-binding
@@ -225,31 +238,34 @@ python -m download.download_pro --species "Homo sapiens" --filter kinase
 ```
 
 ### download/download_dna.py - DNA Data
-Downloads transcription factor binding motifs and generates DNA sequences.
+Downloads real transcription factor binding data from ENCODE and JASPAR.
 
 ```bash
-# Download JASPAR motifs
+# Download ENCODE ChIP-seq binding sites (real experimental data)
+python -m download.download_dna --source encode --max-experiments 100
+
+# Download JASPAR motifs (experimentally validated)
 python -m download.download_dna --source jaspar
 
-# Generate sequences with motifs
-python -m download.download_dna --source jaspar --generate-sequences
-
-# Use common literature motifs
-python -m download.download_dna --source common --sequences-per-tf 100
+# Download from all sources
+python -m download.download_dna --source all
 ```
 
 ### download/download_rna.py - RNA Data
-Downloads RNA-binding protein motifs and generates RNA sequences.
+Downloads real RNA-binding protein data from ENCODE, ATtRACT, and RNAcentral.
 
 ```bash
-# Download ATtRACT database
+# Download ENCODE eCLIP binding sites (real experimental data)
+python -m download.download_rna --source encode --max-experiments 100
+
+# Download ATtRACT motifs (experimentally validated)
 python -m download.download_rna --source attract
 
-# Generate sequences with motifs
-python -m download.download_rna --source attract --generate-sequences
+# Download real RNA sequences from RNAcentral
+python -m download.download_rna --source rnacentral --max-sequences 10000
 
-# Use common literature motifs
-python -m download.download_rna --source common
+# Download from all sources
+python -m download.download_rna --source all
 ```
 
 ### download/download_mol.py - Molecule Data
@@ -345,14 +361,17 @@ The following interaction types are planned for future development:
 - [STRING Database](https://string-db.org/) - Protein-protein interaction networks
 - [AlphaFold Database](https://alphafold.ebi.ac.uk/) - Protein structure predictions
 - [JASPAR](https://jaspar.genereg.net/) - Transcription factor binding profiles
+- [ENCODE](https://www.encodeproject.org/) - ChIP-seq and eCLIP experimental data
 - [UniProt](https://www.uniprot.org/) - Protein sequence and annotation
 - [ATtRACT](https://attract.cnic.es/) - RNA-binding protein motifs
+- [RNAcentral](https://rnacentral.org/) - Non-coding RNA sequences
 - [ChEMBL](https://www.ebi.ac.uk/chembl/) - Bioactivity database
 
 ### Key Papers
 - Jumper et al. (2021) - "Highly accurate protein structure prediction with AlphaFold" - *Nature*
 - Lin et al. (2023) - "Evolutionary-scale prediction of atomic-level protein structure with a language model" - *Science*
 - Szklarczyk et al. (2023) - "The STRING database in 2023" - *Nucleic Acids Research*
+- Van Nostrand et al. (2020) - "A large-scale binding and functional map of human RNA-binding proteins" - *Nature*
 
 ## License
 

@@ -3,32 +3,32 @@
 Download DNA Data
 =================
 
-Unified script for downloading DNA data from multiple sources:
-1. JASPAR - Transcription factor binding motifs
-2. ENCODE - ChIP-seq binding sites
-3. Generated sequences - Synthetic DNA sequences with motifs
+Downloads real DNA-protein interaction data from multiple sources:
+1. ENCODE ChIP-seq - Real transcription factor binding sites from experiments
+2. JASPAR - Real experimentally validated TF binding motifs (no sequence generation)
 
-This script provides DNA data for protein-DNA interaction models.
+This script provides REAL DNA data for protein-DNA interaction models.
+NO synthetic/generated sequences are created.
 
 Usage:
-    python download_dna.py --source jaspar
-    python download_dna.py --source jaspar --generate-sequences
-    python download_dna.py --generate-random --num-sequences 10000
-    python download_dna.py --fasta-file dna_sequences.fasta
+    python -m download.download_dna --source encode
+    python -m download.download_dna --source jaspar
+    python -m download.download_dna --source all
+    python -m download.download_dna --fasta-file dna_sequences.fasta
 
 Data Sources:
-    - JASPAR: Transcription factor binding profiles
-    - ENCODE: ChIP-seq binding sites
-    - HOCOMOCO: Human and mouse TF binding motifs
+    - ENCODE ChIP-seq: Real experimentally determined TF binding sites
+    - JASPAR: Experimentally validated transcription factor binding motifs
 """
 
 import argparse
+import csv
+import gzip
 import json
-import random
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import requests
 from tqdm import tqdm
@@ -41,166 +41,269 @@ if hasattr(sys.stdout, "reconfigure"):
 # API ENDPOINTS
 # =============================================================================
 
-# JASPAR
+# JASPAR API
 JASPAR_API_URL = "https://jaspar.elixir.no/api/v1"
 
-# ENCODE
+# ENCODE API
 ENCODE_API_URL = "https://www.encodeproject.org"
 
 # =============================================================================
 # DNA VOCABULARY AND UTILITIES
 # =============================================================================
 
-DNA_NUCLEOTIDES = ["A", "C", "G", "T"]
-
-# IUPAC ambiguity codes for DNA
-IUPAC_CODES = {
-    "A": ["A"],
-    "C": ["C"],
-    "G": ["G"],
-    "T": ["T"],
-    "U": ["T"],  # Convert U to T
-    "R": ["A", "G"],
-    "Y": ["C", "T"],
-    "S": ["G", "C"],
-    "W": ["A", "T"],
-    "K": ["G", "T"],
-    "M": ["A", "C"],
-    "B": ["C", "G", "T"],
-    "D": ["A", "G", "T"],
-    "H": ["A", "C", "T"],
-    "V": ["A", "C", "G"],
-    "N": ["A", "C", "G", "T"],
-}
-
-# Common TF binding motifs from literature
-COMMON_TF_MOTIFS = {
-    "TP53": ["RRRCWWGYYY", "RRRCATGYYY", "GGGCATGTCC"],
-    "SP1": ["GGGCGG", "GGGGCGGGG", "CCGCCC"],
-    "MYC": ["CACGTG", "CACATG", "CATGTG"],
-    "CREB1": ["TGACGTCA", "TGACGTMA"],
-    "JUN": ["TGACTCA", "TGAGTCA"],
-    "FOS": ["TGACTCA", "TGAGTCA"],
-    "NFKB1": ["GGGACTTTCC", "GGGRNNYYCC"],
-    "RELA": ["GGGACTTTCC", "GGGRNNYYCC"],
-    "STAT1": ["TTCNNNGAA", "TTCCNGGAA"],
-    "STAT3": ["TTCNNNGAA", "TTCCNGGAA"],
-    "E2F1": ["TTTCGCGC", "TTTGGCGC"],
-    "YY1": ["CCCATNTT", "GCCATNTT"],
-    "ETS1": ["GGAA", "GGAT", "CGGAAGT"],
-    "GATA1": ["WGATAR", "AGATAG"],
-    "GATA2": ["WGATAR", "AGATAG"],
-    "GATA3": ["WGATAR", "AGATAG"],
-    "PAX6": ["TTCACGC", "NTTCACGCNSA"],
-    "SOX2": ["CATTGTT", "CTTTGTT"],
-    "OCT4": ["ATGCAAAT", "ATTTGCAT"],
-    "NANOG": ["CATTANN", "AGCCATCA"],
-    "HNF4A": ["CAAAGTCCA", "TGGACTTTG"],
-    "FOXA1": ["TGTTTAC", "TGTTTGC"],
-    "FOXA2": ["TGTTTAC", "TGTTTGC"],
-    "CTCF": ["CCGCGNGGNGGCAG", "CCACCAGGGGGCGC"],
-    "REST": ["TTCAGCACCATGGACAGCGCC", "NNCAGCACCNNGGACAGNNCC"],
-    "RUNX1": ["TGTGGT", "ACCACA"],
-    "ERG": ["GGAA", "ACGGAAGT"],
-    "SRF": ["CCATATTAGG", "CCWWWWWWGG"],
-    "MEF2A": ["CTAWWWWTAG", "YTAWWWWTAR"],
-    "CEBPA": ["TTGCGCAA", "ATTGCGCAAT"],
-    "CEBPB": ["TTGCGCAA", "ATTGCGCAAT"],
-}
+DNA_NUCLEOTIDES = set("ACGT")
 
 
-def expand_iupac_motif(motif: str) -> str:
-    """
-    Expand IUPAC ambiguity codes to specific nucleotides
-
-    Args:
-        motif: Motif string with IUPAC codes
-
-    Returns:
-        Expanded motif with random nucleotide choices
-    """
-    expanded = ""
-    for char in motif.upper():
-        if char in IUPAC_CODES:
-            expanded += random.choice(IUPAC_CODES[char])
-        else:
-            expanded += random.choice(DNA_NUCLEOTIDES)
-    return expanded
-
-
-def generate_random_dna(length: int) -> str:
-    """
-    Generate random DNA sequence
-
-    Args:
-        length: Sequence length
-
-    Returns:
-        Random DNA sequence
-    """
-    return "".join(random.choices(DNA_NUCLEOTIDES, k=length))
-
-
-def generate_dna_with_motif(
-    motif: str, min_flank: int = 20, max_flank: int = 50
-) -> str:
-    """
-    Generate DNA sequence containing a specific motif
-
-    Args:
-        motif: Binding motif (may contain IUPAC codes)
-        min_flank: Minimum flanking sequence length
-        max_flank: Maximum flanking sequence length
-
-    Returns:
-        DNA sequence containing the motif
-    """
-    # Expand IUPAC codes
-    expanded_motif = expand_iupac_motif(motif)
-
-    # Generate flanking regions
-    left_len = random.randint(min_flank, max_flank)
-    right_len = random.randint(min_flank, max_flank)
-
-    left_flank = generate_random_dna(left_len)
-    right_flank = generate_random_dna(right_len)
-
-    return left_flank + expanded_motif + right_flank
+def is_valid_dna(sequence: str) -> bool:
+    """Check if sequence is valid DNA"""
+    if not sequence:
+        return False
+    seq_upper = sequence.upper()
+    return all(c in DNA_NUCLEOTIDES or c == "N" for c in seq_upper)
 
 
 def reverse_complement(sequence: str) -> str:
-    """
-    Get reverse complement of DNA sequence
-
-    Args:
-        sequence: DNA sequence
-
-    Returns:
-        Reverse complement
-    """
+    """Get reverse complement of DNA sequence"""
     complement = {"A": "T", "T": "A", "C": "G", "G": "C", "N": "N"}
     return "".join(complement.get(base, "N") for base in reversed(sequence.upper()))
 
 
-def is_valid_dna(sequence: str) -> bool:
+# =============================================================================
+# ENCODE ChIP-seq DATA DOWNLOAD
+# =============================================================================
+
+
+def download_encode_chipseq(
+    output_dir: Path,
+    organism: str = "Homo sapiens",
+    max_experiments: int = 100,
+    max_binding_sites: int = 100000,
+) -> Dict[str, List[Dict]]:
     """
-    Check if sequence is valid DNA
+    Download real ChIP-seq data from ENCODE
+
+    ChIP-seq (Chromatin Immunoprecipitation sequencing) provides
+    experimentally determined transcription factor binding sites.
 
     Args:
-        sequence: DNA sequence
+        output_dir: Output directory
+        organism: Target organism
+        max_experiments: Maximum number of experiments to download
+        max_binding_sites: Maximum binding sites per TF
 
     Returns:
-        True if valid DNA sequence
+        Dictionary mapping TF names to binding site data
     """
-    if not sequence or len(sequence) < 4:
-        return False
+    print("=" * 70)
+    print("DOWNLOADING ENCODE ChIP-seq DATA")
+    print("=" * 70)
+    print(f"Organism: {organism}")
+    print(f"Max experiments: {max_experiments}")
+    print()
 
-    valid_chars = set("ACGTN")
-    return all(c.upper() in valid_chars for c in sequence)
+    encode_dir = output_dir / "encode"
+    encode_dir.mkdir(parents=True, exist_ok=True)
+
+    headers = {"Accept": "application/json"}
+
+    # Search for TF ChIP-seq experiments
+    print("Searching for TF ChIP-seq experiments...")
+
+    search_url = (
+        f"{ENCODE_API_URL}/search/"
+        f"?type=Experiment"
+        f"&assay_title=TF+ChIP-seq"
+        f"&replicates.library.biosample.donor.organism.scientific_name={organism.replace(' ', '+')}"
+        f"&status=released"
+        f"&limit={max_experiments}"
+        f"&format=json"
+    )
+
+    try:
+        response = requests.get(search_url, headers=headers, timeout=60)
+        response.raise_for_status()
+        search_results = response.json()
+    except requests.RequestException as e:
+        print(f"❌ Failed to search ENCODE: {e}")
+        return {}
+
+    experiments = search_results.get("@graph", [])
+    print(f"✓ Found {len(experiments)} TF ChIP-seq experiments")
+
+    if not experiments:
+        print("No experiments found. Try different search parameters.")
+        return {}
+
+    # Process each experiment
+    tf_binding_sites: Dict[str, List[Dict]] = {}
+    all_binding_sites: List[Dict] = []
+
+    for exp in tqdm(experiments, desc="Processing experiments"):
+        exp_accession = exp.get("accession", "")
+
+        # Get target (TF) information
+        targets = exp.get("target", [])
+        if isinstance(targets, str):
+            targets = [targets]
+
+        # Get the TF name from the target
+        tf_name = None
+        for target in targets:
+            if isinstance(target, dict):
+                tf_name = target.get("label", "").upper()
+            elif isinstance(target, str):
+                # Target is a path like "/targets/CTCF-human/"
+                parts = target.strip("/").split("/")
+                if len(parts) >= 2:
+                    tf_name = parts[-1].split("-")[0].upper()
+            if tf_name:
+                break
+
+        if not tf_name:
+            continue
+
+        # Get experiment details for files
+        exp_url = f"{ENCODE_API_URL}/experiments/{exp_accession}/?format=json"
+
+        try:
+            exp_response = requests.get(exp_url, headers=headers, timeout=30)
+            exp_response.raise_for_status()
+            exp_data = exp_response.json()
+        except requests.RequestException:
+            continue
+
+        # Find BED narrowPeak files (binding sites)
+        files = exp_data.get("files", [])
+
+        for file_ref in files:
+            if isinstance(file_ref, str):
+                file_id = file_ref.strip("/").split("/")[-1]
+            else:
+                file_id = file_ref.get("accession", "")
+
+            if not file_id:
+                continue
+
+            # Get file metadata
+            file_url = f"{ENCODE_API_URL}/files/{file_id}/?format=json"
+
+            try:
+                file_response = requests.get(file_url, headers=headers, timeout=30)
+                file_response.raise_for_status()
+                file_data = file_response.json()
+            except requests.RequestException:
+                continue
+
+            # Look for BED narrowPeak files (contain binding peaks)
+            file_format = file_data.get("file_format", "")
+            output_type = file_data.get("output_type", "")
+
+            if file_format == "bed" and "peak" in output_type.lower():
+                # Download the BED file
+                download_url = file_data.get("cloud_metadata", {}).get("url")
+                if not download_url:
+                    download_url = f"{ENCODE_API_URL}{file_data.get('href', '')}"
+
+                if not download_url or download_url == ENCODE_API_URL:
+                    continue
+
+                try:
+                    bed_response = requests.get(download_url, timeout=60)
+                    bed_response.raise_for_status()
+
+                    # Parse BED content
+                    content = bed_response.content
+                    if download_url.endswith(".gz"):
+                        content = gzip.decompress(content)
+
+                    lines = content.decode("utf-8", errors="ignore").strip().split("\n")
+
+                    sites_for_tf = []
+                    for line in lines[:max_binding_sites]:
+                        if line.startswith("#") or not line.strip():
+                            continue
+
+                        parts = line.split("\t")
+                        if len(parts) < 3:
+                            continue
+
+                        chrom = parts[0]
+                        start = int(parts[1])
+                        end = int(parts[2])
+                        name = parts[3] if len(parts) > 3 else ""
+                        score = float(parts[4]) if len(parts) > 4 else 0.0
+                        strand = parts[5] if len(parts) > 5 else "+"
+
+                        site_data = {
+                            "tf_name": tf_name,
+                            "chromosome": chrom,
+                            "start": start,
+                            "end": end,
+                            "strand": strand,
+                            "score": score,
+                            "name": name,
+                            "experiment": exp_accession,
+                            "source": "ENCODE_ChIP-seq",
+                        }
+
+                        sites_for_tf.append(site_data)
+                        all_binding_sites.append(site_data)
+
+                    if sites_for_tf:
+                        if tf_name not in tf_binding_sites:
+                            tf_binding_sites[tf_name] = []
+                        tf_binding_sites[tf_name].extend(sites_for_tf)
+
+                    # Only process one BED file per experiment
+                    break
+
+                except requests.RequestException:
+                    continue
+
+        # Rate limiting
+        time.sleep(0.1)
+
+    print(f"\n✓ Downloaded binding sites for {len(tf_binding_sites)} TFs")
+    print(f"✓ Total binding sites: {len(all_binding_sites):,}")
+
+    # Save results
+    if tf_binding_sites:
+        # Save all binding sites as JSON
+        sites_file = encode_dir / "binding_sites.json"
+        with open(sites_file, "w") as f:
+            json.dump(tf_binding_sites, f, indent=2)
+        print(f"✓ Saved: {sites_file}")
+
+        # Save as TSV
+        tsv_file = encode_dir / "binding_sites.tsv"
+        with open(tsv_file, "w") as f:
+            f.write("tf_name\tchromosome\tstart\tend\tstrand\tscore\texperiment\n")
+            for site in all_binding_sites:
+                f.write(
+                    f"{site['tf_name']}\t{site['chromosome']}\t{site['start']}\t"
+                    f"{site['end']}\t{site['strand']}\t{site['score']}\t"
+                    f"{site['experiment']}\n"
+                )
+        print(f"✓ Saved: {tsv_file}")
+
+        # Save summary
+        summary_file = encode_dir / "summary.json"
+        summary = {
+            "total_tfs": len(tf_binding_sites),
+            "total_binding_sites": len(all_binding_sites),
+            "tf_counts": {tf: len(sites) for tf, sites in tf_binding_sites.items()},
+            "organism": organism,
+            "source": "ENCODE_ChIP-seq",
+        }
+        with open(summary_file, "w") as f:
+            json.dump(summary, f, indent=2)
+        print(f"✓ Saved: {summary_file}")
+
+    return tf_binding_sites
 
 
 # =============================================================================
-# JASPAR DATABASE
+# JASPAR DATABASE DOWNLOAD
 # =============================================================================
 
 
@@ -212,6 +315,9 @@ def download_jaspar_motifs(
 ) -> Dict[str, Dict]:
     """
     Download transcription factor binding motifs from JASPAR
+
+    JASPAR contains experimentally validated position frequency matrices
+    for transcription factor binding sites.
 
     Args:
         output_dir: Output directory
@@ -225,6 +331,8 @@ def download_jaspar_motifs(
     print("=" * 70)
     print("DOWNLOADING JASPAR MOTIFS")
     print("=" * 70)
+    print(f"Collection: {collection}")
+    print(f"Taxonomic group: {tax_group}")
     print()
 
     jaspar_dir = output_dir / "jaspar"
@@ -327,172 +435,14 @@ def download_jaspar_motifs(
             )
     print(f"✓ Saved: {tsv_file}")
 
-    # Save consensus sequences as FASTA
-    fasta_file = jaspar_dir / "jaspar_consensus.fasta"
-    with open(fasta_file, "w") as f:
-        for matrix_id, data in motifs.items():
-            f.write(f">{matrix_id}|{data['name']}\n{data['consensus']}\n")
-    print(f"✓ Saved: {fasta_file}")
+    # Save PFM data
+    pfm_file = jaspar_dir / "position_frequency_matrices.json"
+    pfm_data = {mid: m.get("pfm", {}) for mid, m in motifs.items()}
+    with open(pfm_file, "w") as f:
+        json.dump(pfm_data, f, indent=2)
+    print(f"✓ Saved: {pfm_file}")
 
     return motifs
-
-
-# =============================================================================
-# SEQUENCE GENERATION
-# =============================================================================
-
-
-def generate_jaspar_sequences(
-    motifs: Dict[str, Dict],
-    sequences_per_motif: int = 50,
-    include_reverse_complement: bool = True,
-) -> List[Dict]:
-    """
-    Generate DNA sequences containing JASPAR motifs
-
-    Args:
-        motifs: Dictionary of JASPAR motifs
-        sequences_per_motif: Number of sequences per motif
-        include_reverse_complement: Also generate reverse complement sequences
-
-    Returns:
-        List of sequence dictionaries
-    """
-    print("\nGenerating DNA sequences from JASPAR motifs...")
-
-    sequences = []
-
-    for matrix_id, motif_data in tqdm(motifs.items(), desc="Generating sequences"):
-        consensus = motif_data.get("consensus", "")
-        if not consensus or len(consensus) < 4:
-            continue
-
-        tf_name = motif_data.get("name", matrix_id)
-        uniprot_ids = motif_data.get("uniprot_ids", [])
-
-        for _ in range(sequences_per_motif):
-            # Generate sequence with motif
-            dna_seq = generate_dna_with_motif(consensus)
-            sequences.append(
-                {
-                    "sequence": dna_seq,
-                    "length": len(dna_seq),
-                    "tf_name": tf_name,
-                    "matrix_id": matrix_id,
-                    "motif": consensus,
-                    "uniprot_ids": uniprot_ids,
-                    "strand": "+",
-                    "source": "jaspar_generated",
-                }
-            )
-
-            # Optionally add reverse complement
-            if include_reverse_complement:
-                rc_seq = generate_dna_with_motif(reverse_complement(consensus))
-                sequences.append(
-                    {
-                        "sequence": rc_seq,
-                        "length": len(rc_seq),
-                        "tf_name": tf_name,
-                        "matrix_id": matrix_id,
-                        "motif": reverse_complement(consensus),
-                        "uniprot_ids": uniprot_ids,
-                        "strand": "-",
-                        "source": "jaspar_generated",
-                    }
-                )
-
-    print(f"✓ Generated {len(sequences):,} sequences")
-    return sequences
-
-
-def generate_common_tf_sequences(
-    sequences_per_tf: int = 100,
-    include_reverse_complement: bool = True,
-) -> List[Dict]:
-    """
-    Generate DNA sequences using common literature-curated TF motifs
-
-    Args:
-        sequences_per_tf: Number of sequences per TF
-        include_reverse_complement: Include reverse complement
-
-    Returns:
-        List of sequence dictionaries
-    """
-    print("\nGenerating sequences from common TF motifs...")
-
-    sequences = []
-
-    for tf_name, motifs in tqdm(COMMON_TF_MOTIFS.items(), desc="Generating"):
-        seqs_per_motif = sequences_per_tf // len(motifs)
-
-        for motif in motifs:
-            for _ in range(seqs_per_motif):
-                dna_seq = generate_dna_with_motif(motif)
-                sequences.append(
-                    {
-                        "sequence": dna_seq,
-                        "length": len(dna_seq),
-                        "tf_name": tf_name,
-                        "motif": motif,
-                        "strand": "+",
-                        "source": "common_motifs",
-                    }
-                )
-
-                if include_reverse_complement:
-                    rc_seq = generate_dna_with_motif(reverse_complement(motif))
-                    sequences.append(
-                        {
-                            "sequence": rc_seq,
-                            "length": len(rc_seq),
-                            "tf_name": tf_name,
-                            "motif": reverse_complement(motif),
-                            "strand": "-",
-                            "source": "common_motifs",
-                        }
-                    )
-
-    print(f"✓ Generated {len(sequences):,} sequences")
-    return sequences
-
-
-def generate_random_sequences(
-    num_sequences: int = 10000,
-    min_length: int = 50,
-    max_length: int = 150,
-) -> List[Dict]:
-    """
-    Generate random DNA sequences (for negative sampling)
-
-    Args:
-        num_sequences: Number of sequences to generate
-        min_length: Minimum sequence length
-        max_length: Maximum sequence length
-
-    Returns:
-        List of sequence dictionaries
-    """
-    print(f"\nGenerating {num_sequences:,} random DNA sequences...")
-
-    sequences = []
-
-    for i in tqdm(range(num_sequences), desc="Generating random sequences"):
-        length = random.randint(min_length, max_length)
-        dna_seq = generate_random_dna(length)
-        sequences.append(
-            {
-                "sequence": dna_seq,
-                "length": length,
-                "tf_name": None,
-                "motif": None,
-                "source": "random",
-            }
-        )
-
-    print(f"✓ Generated {len(sequences):,} random sequences")
-    return sequences
 
 
 # =============================================================================
@@ -500,23 +450,24 @@ def generate_random_sequences(
 # =============================================================================
 
 
-def load_fasta_file(filepath: Path) -> List[Dict]:
+def load_fasta_file(fasta_path: Path) -> List[Dict]:
     """
-    Load DNA sequences from FASTA file
+    Load DNA sequences from a FASTA file
 
     Args:
-        filepath: Path to FASTA file
+        fasta_path: Path to FASTA file
 
     Returns:
         List of sequence dictionaries
     """
-    print(f"Loading sequences from {filepath}...")
+    print(f"\nLoading sequences from {fasta_path}...")
 
     sequences = []
     current_id = None
-    current_seq: List[str] = []
+    current_seq = []
+    current_meta = {}
 
-    with open(filepath, "r") as f:
+    with open(fasta_path, "r") as f:
         for line in f:
             line = line.strip()
             if line.startswith(">"):
@@ -526,124 +477,113 @@ def load_fasta_file(filepath: Path) -> List[Dict]:
                     if is_valid_dna(seq):
                         sequences.append(
                             {
+                                "id": current_id,
                                 "sequence": seq,
                                 "length": len(seq),
-                                "seq_id": current_id,
                                 "source": "fasta",
+                                **current_meta,
                             }
                         )
 
-                # Start new sequence
-                current_id = line[1:].split()[0]
+                # Parse header
+                header = line[1:]
+                parts = header.split("|")
+                current_id = parts[0].strip()
+                current_meta = {}
+
+                # Parse additional metadata from header
+                if len(parts) > 1:
+                    for part in parts[1:]:
+                        if "=" in part:
+                            key, value = part.split("=", 1)
+                            current_meta[key.strip()] = value.strip()
+                        else:
+                            current_meta["description"] = part.strip()
+
                 current_seq = []
             else:
                 current_seq.append(line)
 
-        # Don't forget last sequence
-        if current_id and current_seq:
-            seq = "".join(current_seq).upper()
-            if is_valid_dna(seq):
-                sequences.append(
-                    {
-                        "sequence": seq,
-                        "length": len(seq),
-                        "seq_id": current_id,
-                        "source": "fasta",
-                    }
-                )
+    # Don't forget last sequence
+    if current_id and current_seq:
+        seq = "".join(current_seq).upper()
+        if is_valid_dna(seq):
+            sequences.append(
+                {
+                    "id": current_id,
+                    "sequence": seq,
+                    "length": len(seq),
+                    "source": "fasta",
+                    **current_meta,
+                }
+            )
 
-    print(f"✓ Loaded {len(sequences):,} sequences")
+    print(f"✓ Loaded {len(sequences):,} valid DNA sequences")
     return sequences
 
 
 def save_sequences(
     sequences: List[Dict],
     output_dir: Path,
-    motifs: Optional[Dict] = None,
 ) -> None:
     """
-    Save DNA sequence data
+    Save DNA sequences to multiple formats
 
     Args:
         sequences: List of sequence dictionaries
         output_dir: Output directory
-        motifs: Optional motif data
     """
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if not sequences:
+        print("No sequences to save.")
+        return
 
-    # Save as FASTA
-    fasta_file = output_dir / "dna_sequences.fasta"
-    with open(fasta_file, "w") as f:
-        for i, seq_data in enumerate(sequences):
-            seq_id = seq_data.get("seq_id", f"dna_{i}")
-            tf_name = seq_data.get("tf_name", "")
-            motif = seq_data.get("motif", "")
-
-            header = f">{seq_id}"
-            if tf_name:
-                header += f"|tf={tf_name}"
-            if motif:
-                header += f"|motif={motif}"
-
-            f.write(f"{header}\n{seq_data['sequence']}\n")
-
-    print(f"✓ Saved FASTA: {fasta_file}")
+    print(f"\nSaving {len(sequences):,} sequences...")
 
     # Save as JSON
     json_file = output_dir / "dna_sequences.json"
     with open(json_file, "w") as f:
         json.dump(sequences, f, indent=2)
-    print(f"✓ Saved JSON: {json_file}")
+    print(f"✓ Saved: {json_file}")
+
+    # Save as FASTA
+    fasta_file = output_dir / "dna_sequences.fasta"
+    with open(fasta_file, "w") as f:
+        for seq_data in sequences:
+            seq_id = seq_data.get("id", "unknown")
+            tf = seq_data.get("tf_name", "")
+            header = f">{seq_id}"
+            if tf:
+                header += f"|tf={tf}"
+            f.write(header + "\n")
+
+            # Write sequence in lines of 80 characters
+            seq = seq_data["sequence"]
+            for i in range(0, len(seq), 80):
+                f.write(seq[i : i + 80] + "\n")
+    print(f"✓ Saved: {fasta_file}")
 
     # Save as TSV
     tsv_file = output_dir / "dna_sequences.tsv"
     with open(tsv_file, "w") as f:
-        f.write("seq_id\tsequence\tlength\ttf_name\tmotif\tstrand\tsource\n")
-        for i, seq_data in enumerate(sequences):
-            seq_id = seq_data.get("seq_id", f"dna_{i}")
-            f.write(
-                f"{seq_id}\t{seq_data['sequence']}\t{seq_data['length']}\t"
-                f"{seq_data.get('tf_name', '')}\t{seq_data.get('motif', '')}\t"
-                f"{seq_data.get('strand', '')}\t{seq_data.get('source', '')}\n"
-            )
-    print(f"✓ Saved TSV: {tsv_file}")
-
-    # Save TF-specific files
-    if any(seq.get("tf_name") for seq in sequences):
-        tf_dir = output_dir / "by_tf"
-        tf_dir.mkdir(exist_ok=True)
-
-        # Group sequences by TF
-        tf_sequences: Dict[str, List[Dict]] = {}
+        f.write("id\ttf_name\tlength\tsource\tsequence\n")
         for seq_data in sequences:
-            tf = seq_data.get("tf_name")
-            if tf:
-                if tf not in tf_sequences:
-                    tf_sequences[tf] = []
-                tf_sequences[tf].append(seq_data)
-
-        # Save per-TF files
-        for tf, seqs in tf_sequences.items():
-            tf_file = tf_dir / f"{tf}_sequences.fasta"
-            with open(tf_file, "w") as f:
-                for i, seq_data in enumerate(seqs):
-                    f.write(f">{tf}_{i}|motif={seq_data.get('motif', '')}\n")
-                    f.write(f"{seq_data['sequence']}\n")
-
-        print(f"✓ Saved {len(tf_sequences)} TF-specific files to {tf_dir}")
-
-
-# =============================================================================
-# METADATA AND SUMMARY
-# =============================================================================
+            f.write(
+                f"{seq_data.get('id', 'unknown')}\t"
+                f"{seq_data.get('tf_name', '')}\t"
+                f"{seq_data.get('length', len(seq_data['sequence']))}\t"
+                f"{seq_data.get('source', 'unknown')}\t"
+                f"{seq_data['sequence']}\n"
+            )
+    print(f"✓ Saved: {tsv_file}")
 
 
 def save_metadata(
     output_dir: Path,
     source: str,
-    sequence_count: int,
+    sequence_count: int = 0,
     tf_count: int = 0,
     motif_count: int = 0,
+    binding_site_count: int = 0,
 ) -> None:
     """Save download metadata"""
     output_file = output_dir / "download_info.json"
@@ -653,6 +593,7 @@ def save_metadata(
         "sequence_count": sequence_count,
         "tf_count": tf_count,
         "motif_count": motif_count,
+        "binding_site_count": binding_site_count,
         "download_date": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -666,6 +607,7 @@ def print_summary(
     output_dir: Path,
     sequences: List[Dict],
     motifs: Optional[Dict] = None,
+    binding_sites: Optional[Dict] = None,
 ) -> None:
     """Print download summary"""
     print()
@@ -674,36 +616,27 @@ def print_summary(
     print("=" * 70)
     print()
     print(f"Output directory: {output_dir}")
-    print(f"Sequences generated: {len(sequences):,}")
+    print(f"Sequences: {len(sequences):,}")
 
     if motifs:
         print(f"TFs with motifs: {len(motifs):,}")
 
+    if binding_sites:
+        print(f"TFs with binding sites: {len(binding_sites):,}")
+        total_sites = sum(len(v) for v in binding_sites.values())
+        print(f"Total binding sites: {total_sites:,}")
+
     # Count by source
-    sources = {}
-    for seq in sequences:
-        src = seq.get("source", "unknown")
-        sources[src] = sources.get(src, 0) + 1
+    if sequences:
+        sources = {}
+        for seq in sequences:
+            src = seq.get("source", "unknown")
+            sources[src] = sources.get(src, 0) + 1
 
-    print("\nSequences by source:")
-    for src, count in sorted(sources.items()):
-        print(f"  • {src}: {count:,}")
+        print("\nSequences by source:")
+        for src, count in sorted(sources.items()):
+            print(f"  • {src}: {count:,}")
 
-    # Count unique TFs
-    tfs = set(seq.get("tf_name") for seq in sequences if seq.get("tf_name"))
-    if tfs:
-        print(f"\nUnique TFs: {len(tfs)}")
-
-    print()
-    print("Files created:")
-    print("  • dna_sequences.fasta - DNA sequences (FASTA)")
-    print("  • dna_sequences.json - Full data (JSON)")
-    print("  • dna_sequences.tsv - Summary (TSV)")
-    if motifs:
-        print("  • jaspar/ - JASPAR database files")
-    if tfs:
-        print("  • by_tf/ - TF-specific sequence files")
-    print("  • download_info.json - Metadata")
     print()
 
 
@@ -714,19 +647,19 @@ def print_summary(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Download DNA Data",
+        description="Download DNA Data (Real Data Only)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    python download_dna.py --source jaspar
-    python download_dna.py --source jaspar --generate-sequences
-    python download_dna.py --source common --sequences-per-tf 100
-    python download_dna.py --generate-random --num-sequences 10000
-    python download_dna.py --fasta-file dna_sequences.fasta
+    python -m download.download_dna --source encode
+    python -m download.download_dna --source jaspar
+    python -m download.download_dna --source all
+    python -m download.download_dna --fasta-file dna_sequences.fasta
 
 Sources:
-    jaspar - JASPAR database (TF binding motifs)
-    common - Common literature-curated TF motifs
+    encode  - ENCODE ChIP-seq data (real TF binding sites)
+    jaspar  - JASPAR database (experimentally validated TF motifs)
+    all     - Download from all sources
         """,
     )
 
@@ -734,61 +667,28 @@ Sources:
         "--source",
         type=str,
         default="jaspar",
-        choices=["jaspar", "common"],
-        help="Data source for TF motifs (default: jaspar)",
-    )
-
-    parser.add_argument(
-        "--generate-sequences",
-        action="store_true",
-        help="Generate DNA sequences containing binding motifs",
-    )
-
-    parser.add_argument(
-        "--sequences-per-motif",
-        type=int,
-        default=50,
-        help="Number of sequences to generate per motif (default: 50)",
-    )
-
-    parser.add_argument(
-        "--sequences-per-tf",
-        type=int,
-        default=100,
-        help="Number of sequences to generate per TF for common motifs (default: 100)",
-    )
-
-    parser.add_argument(
-        "--generate-random",
-        action="store_true",
-        help="Generate random DNA sequences (for negative sampling)",
-    )
-
-    parser.add_argument(
-        "--num-sequences",
-        type=int,
-        default=10000,
-        help="Number of random sequences to generate (default: 10000)",
-    )
-
-    parser.add_argument(
-        "--min-length",
-        type=int,
-        default=50,
-        help="Minimum sequence length (default: 50)",
-    )
-
-    parser.add_argument(
-        "--max-length",
-        type=int,
-        default=150,
-        help="Maximum sequence length (default: 150)",
+        choices=["encode", "jaspar", "all"],
+        help="Data source (default: jaspar)",
     )
 
     parser.add_argument(
         "--fasta-file",
         type=str,
         help="Load DNA sequences from FASTA file",
+    )
+
+    parser.add_argument(
+        "--organism",
+        type=str,
+        default="Homo sapiens",
+        help="Target organism (default: 'Homo sapiens')",
+    )
+
+    parser.add_argument(
+        "--max-experiments",
+        type=int,
+        default=100,
+        help="Maximum ENCODE experiments to process (default: 100)",
     )
 
     parser.add_argument(
@@ -806,34 +706,20 @@ Sources:
     )
 
     parser.add_argument(
-        "--include-reverse-complement",
-        action="store_true",
-        default=True,
-        help="Include reverse complement sequences (default: True)",
-    )
-
-    parser.add_argument(
         "--output-dir",
         type=str,
         default="data/dna",
         help="Output directory (default: data/dna)",
     )
 
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Random seed (default: 42)",
-    )
-
     args = parser.parse_args()
 
-    # Set random seed
-    random.seed(args.seed)
-
     print("=" * 70)
-    print("DNA DATA DOWNLOAD")
+    print("DNA DATA DOWNLOAD (REAL DATA ONLY)")
     print("=" * 70)
+    print()
+    print("NOTE: This script downloads REAL experimental data only.")
+    print("      No synthetic/generated sequences are created.")
     print()
 
     output_dir = Path(args.output_dir)
@@ -844,20 +730,28 @@ Sources:
 
     sequences: List[Dict] = []
     motifs: Optional[Dict] = None
+    binding_sites: Optional[Dict] = None
 
     # Load from FASTA file if specified
     if args.fasta_file:
         sequences = load_fasta_file(Path(args.fasta_file))
 
-    # Generate random sequences
-    elif args.generate_random:
-        sequences = generate_random_sequences(
-            num_sequences=args.num_sequences,
-            min_length=args.min_length,
-            max_length=args.max_length,
+    elif args.source == "encode" or args.source == "all":
+        # Download ENCODE ChIP-seq data
+        binding_sites = download_encode_chipseq(
+            output_dir,
+            organism=args.organism,
+            max_experiments=args.max_experiments,
         )
 
-    # Download from JASPAR
+        if args.source == "all":
+            # Also download JASPAR
+            motifs = download_jaspar_motifs(
+                output_dir,
+                collection=args.collection,
+                tax_group=args.tax_group,
+            )
+
     elif args.source == "jaspar":
         motifs = download_jaspar_motifs(
             output_dir,
@@ -865,52 +759,30 @@ Sources:
             tax_group=args.tax_group,
         )
 
-        if args.generate_sequences and motifs:
-            sequences = generate_jaspar_sequences(
-                motifs,
-                sequences_per_motif=args.sequences_per_motif,
-                include_reverse_complement=args.include_reverse_complement,
-            )
-
-    # Use common literature motifs
-    elif args.source == "common":
-        sequences = generate_common_tf_sequences(
-            sequences_per_tf=args.sequences_per_tf,
-            include_reverse_complement=args.include_reverse_complement,
-        )
-
-    # Save sequences if generated
+    # Save sequences if we have them
     if sequences:
-        save_sequences(sequences, output_dir, motifs)
+        save_sequences(sequences, output_dir)
 
-        # Save metadata
-        save_metadata(
-            output_dir=output_dir,
-            source=args.source if not args.fasta_file else "fasta",
-            sequence_count=len(sequences),
-            tf_count=len(motifs) if motifs else len(COMMON_TF_MOTIFS),
-            motif_count=len(motifs)
-            if motifs
-            else sum(len(v) for v in COMMON_TF_MOTIFS.values()),
-        )
-
-    elif motifs:
-        # Just downloaded motifs, no sequences generated
-        save_metadata(
-            output_dir=output_dir,
-            source=args.source,
-            sequence_count=0,
-            tf_count=len(motifs),
-            motif_count=len(motifs),
-        )
+    # Save metadata
+    save_metadata(
+        output_dir=output_dir,
+        source=args.source if not args.fasta_file else "fasta",
+        sequence_count=len(sequences),
+        tf_count=len(motifs) if motifs else 0,
+        motif_count=len(motifs) if motifs else 0,
+        binding_site_count=sum(len(v) for v in binding_sites.values())
+        if binding_sites
+        else 0,
+    )
 
     # Print summary
-    print_summary(output_dir, sequences, motifs)
+    print_summary(output_dir, sequences, motifs, binding_sites)
 
     print("Done!")
     print()
     print("This DNA data can be used with:")
-    print("  • download_p2d.py - Protein-DNA interactions")
+    print("  • python -m prepare.prepare_p2d_data - Prepare protein-DNA data")
+    print()
 
 
 if __name__ == "__main__":

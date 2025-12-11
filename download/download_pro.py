@@ -718,6 +718,84 @@ def download_string_sequences(
     return output_file
 
 
+def download_string_links(
+    taxon_id: int,
+    output_dir: Path,
+    full_links: bool = False,
+) -> Optional[Path]:
+    """
+    Download STRING protein-protein interaction links
+
+    This downloads the actual interaction data needed for P2P models.
+
+    Args:
+        taxon_id: NCBI taxonomy ID
+        output_dir: Output directory
+        full_links: If True, download full links with all evidence channels.
+                   If False, download combined scores only (smaller file).
+
+    Returns:
+        Path to downloaded file
+    """
+    print()
+    print("Downloading STRING protein links (interactions)...")
+
+    import gzip
+
+    # Map strain-specific taxon IDs to STRING-compatible species IDs
+    string_taxon_id = STRING_TAXON_ID_MAP.get(taxon_id, taxon_id)
+    if string_taxon_id != taxon_id:
+        print(f"  (mapped taxon {taxon_id} -> {string_taxon_id} for STRING)")
+
+    # Choose between full links (with all evidence channels) or combined scores only
+    if full_links:
+        filename = f"{string_taxon_id}.protein.links.full.v{STRING_VERSION}.txt.gz"
+        url = f"{STRING_DOWNLOAD_URL}/protein.links.full.v{STRING_VERSION}/{filename}"
+    else:
+        filename = f"{string_taxon_id}.protein.links.v{STRING_VERSION}.txt.gz"
+        url = f"{STRING_DOWNLOAD_URL}/protein.links.v{STRING_VERSION}/{filename}"
+
+    output_file_gz = output_dir / filename
+    output_file = output_dir / "string_links.txt"
+
+    print(f"  URL: {url}")
+
+    try:
+        response = requests.get(url, stream=True, timeout=300)
+        response.raise_for_status()
+    except requests.RequestException as e:
+        print(f"⚠️ Could not download STRING links: {e}")
+        return None
+
+    total_size = int(response.headers.get("content-length", 0))
+    print(f"  File size: {total_size / 1024 / 1024:.1f} MB")
+
+    with open(output_file_gz, "wb") as f:
+        with tqdm(
+            total=total_size,
+            unit="B",
+            unit_scale=True,
+            desc="Downloading",
+            disable=total_size == 0,
+        ) as pbar:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    pbar.update(len(chunk))
+
+    # Decompress
+    print("  Decompressing...")
+    line_count = 0
+    with gzip.open(output_file_gz, "rt") as f_in, open(output_file, "w") as f_out:
+        for line in f_in:
+            f_out.write(line)
+            line_count += 1
+
+    print(f"✓ Saved: {output_file}")
+    print(f"  Total interactions: {line_count - 1:,}")  # -1 for header
+    return output_file
+
+
 # =============================================================================
 # ID MAPPING
 # =============================================================================
@@ -1004,6 +1082,7 @@ Available filters:
         string_dir.mkdir(parents=True, exist_ok=True)
         download_string_protein_info(taxon_id, string_dir)
         download_string_sequences(taxon_id, string_dir)
+        download_string_links(taxon_id, string_dir)
 
     # Save metadata
     save_metadata(

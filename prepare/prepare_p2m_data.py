@@ -509,50 +509,105 @@ class PMolDataPreparer:
 
         try:
             with open(filepath) as f:
-                header = f.readline().lower()
+                header_line = f.readline().strip().lower()
+                header = header_line.split("\t")
+
+                # Find column indices from header
+                protein_id_idx = None
+                protein_seq_idx = None
+                smiles_idx = None
+                label_idx = None
+                affinity_idx = None
+                source_idx = None
+
+                for i, col in enumerate(header):
+                    if col == "protein_id" or col == "uniprot_id":
+                        protein_id_idx = i
+                    elif col == "protein_seq" or col == "sequence":
+                        protein_seq_idx = i
+                    elif col == "smiles" or col == "canonical_smiles":
+                        smiles_idx = i
+                    elif col == "label":
+                        label_idx = i
+                    elif (
+                        col == "affinity" or col == "pchembl" or col == "pchembl_value"
+                    ):
+                        affinity_idx = i
+                    elif col == "source":
+                        source_idx = i
+
+                # Check if this is a molecule interaction file (must have smiles)
+                if smiles_idx is None:
+                    return 0
+
+                # Fall back to positional if header not found
+                if protein_id_idx is None:
+                    protein_id_idx = 0
+                if protein_seq_idx is None:
+                    protein_seq_idx = 1
+                if label_idx is None:
+                    label_idx = 3
 
                 for line in f:
                     parts = line.strip().split("\t")
-                    if len(parts) >= 4:
-                        protein_id = parts[0]
-                        protein_seq = parts[1]
-                        smiles = parts[2]
-                        label = float(parts[3])
+                    if len(parts) <= max(protein_id_idx, protein_seq_idx, smiles_idx):
+                        continue
 
-                        # Get affinity if available
-                        affinity = float(parts[4]) if len(parts) > 4 else 0.0
+                    protein_id = parts[protein_id_idx]
+                    protein_seq = parts[protein_seq_idx]
+                    smiles = parts[smiles_idx]
 
-                        if label >= 0.5:  # Positive interaction
-                            # Validate sequences
-                            if not self._is_valid_protein(protein_seq):
-                                continue
-                            if not self._is_valid_smiles(smiles):
-                                continue
+                    # Get label
+                    try:
+                        label = (
+                            float(parts[label_idx])
+                            if label_idx is not None and len(parts) > label_idx
+                            else 1.0
+                        )
+                    except ValueError:
+                        label = 1.0  # Default to positive if can't parse
 
-                            # Add protein if not exists
-                            if protein_id not in self.proteins:
-                                self.proteins[protein_id] = ProteinInfo(
-                                    uniprot_id=protein_id,
-                                    sequence=protein_seq,
-                                )
+                    # Get affinity if available
+                    affinity = 0.0
+                    if affinity_idx is not None and len(parts) > affinity_idx:
+                        try:
+                            affinity = float(parts[affinity_idx])
+                        except ValueError:
+                            pass
 
-                            # Create interaction
-                            pair_key = (protein_seq, smiles)
-                            if pair_key not in self.protein_mol_pairs:
-                                source = (
-                                    parts[5] if len(parts) > 5 else "interaction_file"
-                                )
-                                interaction = InteractionPair(
-                                    protein_id=protein_id,
-                                    protein_seq=protein_seq,
-                                    smiles=smiles,
-                                    label=1,
-                                    affinity=affinity,
-                                    source=source,
-                                )
-                                self.interactions.append(interaction)
-                                self.protein_mol_pairs.add(pair_key)
-                                count += 1
+                    # Get source if available
+                    source = "interaction_file"
+                    if source_idx is not None and len(parts) > source_idx:
+                        source = parts[source_idx]
+
+                    if label >= 0.5:  # Positive interaction
+                        # Validate sequences
+                        if not self._is_valid_protein(protein_seq):
+                            continue
+                        if not self._is_valid_smiles(smiles):
+                            continue
+
+                        # Add protein if not exists
+                        if protein_id not in self.proteins:
+                            self.proteins[protein_id] = ProteinInfo(
+                                uniprot_id=protein_id,
+                                sequence=protein_seq,
+                            )
+
+                        # Create interaction
+                        pair_key = (protein_seq, smiles)
+                        if pair_key not in self.protein_mol_pairs:
+                            interaction = InteractionPair(
+                                protein_id=protein_id,
+                                protein_seq=protein_seq,
+                                smiles=smiles,
+                                label=1,
+                                affinity=affinity,
+                                source=source,
+                            )
+                            self.interactions.append(interaction)
+                            self.protein_mol_pairs.add(pair_key)
+                            count += 1
 
             if count > 0:
                 logger.info(f"    Loaded {count:,} interactions from {filepath.name}")
@@ -913,10 +968,11 @@ class PMolDataPreparer:
 
         # Check if we have enough data
         if len(self.interactions) == 0:
-            logger.warning(
-                "No interactions found! Creating synthetic data for testing..."
+            raise ValueError(
+                "No interactions found! Please download real data first using:\n"
+                "  python -m download.download_mol --source chembl --include-activities\n"
+                "Synthetic data generation has been disabled."
             )
-            self._create_synthetic_data()
 
         # Generate negative samples
         self.generate_negative_samples()
@@ -942,73 +998,6 @@ class PMolDataPreparer:
             "test_size": len(split.test_pairs),
             "output_dir": str(self.output_dir),
         }
-
-    def _create_synthetic_data(self) -> None:
-        """Create synthetic data for testing when no real data is available"""
-        logger.info("Creating synthetic protein-molecule data for testing...")
-
-        # Generate synthetic proteins (drug targets)
-        for i in range(50):
-            protein_id = f"SYNTH_TARGET_{i:04d}"
-            length = random.randint(100, 500)
-            sequence = "".join(random.choices(list(self.AMINO_ACIDS), k=length))
-
-            self.proteins[protein_id] = ProteinInfo(
-                uniprot_id=protein_id,
-                sequence=sequence,
-                gene_name=f"TARGET_{i}",
-            )
-
-        # Generate synthetic molecules (drug-like SMILES)
-        synthetic_smiles_templates = [
-            "CC(=O)Oc1ccccc1C(=O)O",  # Aspirin-like
-            "CN1C=NC2=C1C(=O)N(C(=O)N2C)C",  # Caffeine-like
-            "CC(C)Cc1ccc(cc1)C(C)C(=O)O",  # Ibuprofen-like
-            "c1ccc2[nH]ccc2c1",  # Indole
-            "c1ccc2ccccc2c1",  # Naphthalene
-        ]
-
-        for i in range(100):
-            mol_id = f"SYNTH_MOL_{i:04d}"
-            base_smiles = random.choice(synthetic_smiles_templates)
-            # Add some variation
-            smiles = base_smiles
-
-            self.molecules[mol_id] = MoleculeInfo(
-                molecule_id=mol_id,
-                smiles=smiles,
-                source="synthetic",
-            )
-
-        # Generate synthetic interactions
-        protein_list = list(self.proteins.keys())
-        mol_list = list(self.molecules.keys())
-
-        for _ in range(200):
-            protein_id = random.choice(protein_list)
-            mol_id = random.choice(mol_list)
-
-            protein_seq = self.proteins[protein_id].sequence
-            smiles = self.molecules[mol_id].smiles
-
-            pair_key = (protein_seq, smiles)
-            if pair_key not in self.protein_mol_pairs:
-                affinity = random.uniform(5.0, 10.0)  # Simulated pIC50
-                self.interactions.append(
-                    InteractionPair(
-                        protein_id=protein_id,
-                        protein_seq=protein_seq,
-                        smiles=smiles,
-                        label=1,
-                        affinity=affinity,
-                        source="synthetic",
-                    )
-                )
-                self.protein_mol_pairs.add(pair_key)
-
-        logger.info(f"  ✓ Created {len(self.proteins)} synthetic proteins")
-        logger.info(f"  ✓ Created {len(self.molecules)} synthetic molecules")
-        logger.info(f"  ✓ Created {len(self.interactions)} synthetic interactions")
 
     def _print_summary(self, features: Dict[str, Any]) -> None:
         """Print summary of prepared data"""

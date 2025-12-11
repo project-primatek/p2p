@@ -576,50 +576,95 @@ class PRNADataPreparer:
 
         try:
             with open(filepath) as f:
-                header = f.readline().lower()
+                header_line = f.readline().strip().lower()
+                header = header_line.split("\t")
 
                 # Check if this file might contain RNA interactions
-                if "rna" not in filepath.name.lower() and "rna" not in header:
+                if "rna" not in filepath.name.lower() and "rna" not in header_line:
                     return 0
+
+                # Find column indices from header
+                protein_id_idx = None
+                protein_seq_idx = None
+                rna_seq_idx = None
+                label_idx = None
+                source_idx = None
+
+                for i, col in enumerate(header):
+                    if col == "protein_id" or col == "uniprot_id":
+                        protein_id_idx = i
+                    elif col == "protein_seq" or col == "sequence":
+                        protein_seq_idx = i
+                    elif col == "rna_seq" or col == "rna_sequence":
+                        rna_seq_idx = i
+                    elif col == "label":
+                        label_idx = i
+                    elif col == "source":
+                        source_idx = i
+
+                # Check if this is an RNA interaction file (must have rna_seq)
+                if rna_seq_idx is None:
+                    return 0
+
+                # Fall back to positional if header not found
+                if protein_id_idx is None:
+                    protein_id_idx = 0
+                if protein_seq_idx is None:
+                    protein_seq_idx = 1
+                if label_idx is None:
+                    label_idx = 3
 
                 for line in f:
                     parts = line.strip().split("\t")
-                    if len(parts) >= 4:
-                        protein_id = parts[0]
-                        protein_seq = parts[1]
-                        rna_seq = parts[2].upper().replace("T", "U")
-                        label = int(parts[3])
+                    if len(parts) <= max(protein_id_idx, protein_seq_idx, rna_seq_idx):
+                        continue
 
-                        if label == 1:
-                            # Validate sequences
-                            if not self._is_valid_protein(protein_seq):
-                                continue
-                            if not self._is_valid_rna(rna_seq):
-                                continue
+                    protein_id = parts[protein_id_idx]
+                    protein_seq = parts[protein_seq_idx]
+                    rna_seq = parts[rna_seq_idx].upper().replace("T", "U")
 
-                            # Add protein if not exists
-                            if protein_id not in self.proteins:
-                                self.proteins[protein_id] = ProteinInfo(
-                                    uniprot_id=protein_id,
-                                    sequence=protein_seq,
-                                )
+                    # Get label
+                    try:
+                        label = (
+                            int(parts[label_idx])
+                            if label_idx is not None and len(parts) > label_idx
+                            else 1
+                        )
+                    except ValueError:
+                        label = 1  # Default to positive if can't parse
 
-                            # Create interaction
-                            pair_key = (protein_seq, rna_seq)
-                            if pair_key not in self.protein_rna_pairs:
-                                source = (
-                                    parts[4] if len(parts) > 4 else "interaction_file"
-                                )
-                                interaction = InteractionPair(
-                                    protein_id=protein_id,
-                                    protein_seq=protein_seq,
-                                    rna_seq=rna_seq,
-                                    label=1,
-                                    source=source,
-                                )
-                                self.interactions.append(interaction)
-                                self.protein_rna_pairs.add(pair_key)
-                                count += 1
+                    # Get source if available
+                    source = "interaction_file"
+                    if source_idx is not None and len(parts) > source_idx:
+                        source = parts[source_idx]
+
+                    if label == 1:
+                        # Validate sequences
+                        if not self._is_valid_protein(protein_seq):
+                            continue
+                        if not self._is_valid_rna(rna_seq):
+                            continue
+
+                        # Add protein if not exists
+                        if protein_id not in self.proteins:
+                            self.proteins[protein_id] = ProteinInfo(
+                                uniprot_id=protein_id,
+                                sequence=protein_seq,
+                            )
+
+                        # Create interaction
+                        pair_key = (protein_seq, rna_seq)
+                        if pair_key not in self.protein_rna_pairs:
+                            interaction = InteractionPair(
+                                protein_id=protein_id,
+                                protein_seq=protein_seq,
+                                rna_seq=rna_seq,
+                                label=1,
+                                source=source,
+                            )
+                            self.interactions.append(interaction)
+                            self.protein_rna_pairs.add(pair_key)
+                            count += 1
 
             if count > 0:
                 logger.info(f"    Loaded {count:,} interactions from {filepath.name}")
@@ -965,10 +1010,12 @@ class PRNADataPreparer:
 
         # Check if we have enough data
         if len(self.interactions) == 0:
-            logger.warning(
-                "No interactions found! Creating synthetic data for testing..."
+            raise ValueError(
+                "No interactions found! Please download real data first using:\n"
+                "  python -m download.download_rna --source encode\n"
+                "  python -m download.download_rna --source attract\n"
+                "Synthetic data generation has been disabled."
             )
-            self._create_synthetic_data()
 
         # Generate negative samples
         self.generate_negative_samples()
@@ -997,62 +1044,6 @@ class PRNADataPreparer:
             "test_size": len(split.test_pairs),
             "output_dir": str(self.output_dir),
         }
-
-    def _create_synthetic_data(self) -> None:
-        """Create synthetic data for testing when no real data is available"""
-        logger.info("Creating synthetic protein-RNA data for testing...")
-
-        # Generate synthetic proteins (RNA binding proteins)
-        for i in range(50):
-            protein_id = f"SYNTH_RBP_{i:04d}"
-            length = random.randint(100, 500)
-            sequence = "".join(random.choices(list(self.AMINO_ACIDS), k=length))
-
-            self.proteins[protein_id] = ProteinInfo(
-                uniprot_id=protein_id,
-                sequence=sequence,
-                gene_name=f"RBP_{i}",
-            )
-
-        # Generate synthetic RNA motifs
-        for i in range(100):
-            motif_id = f"SYNTH_RNA_{i:04d}"
-            length = random.randint(8, 30)
-            sequence = "".join(random.choices(list(RNA_NUCLEOTIDES), k=length))
-
-            self.rna_motifs[motif_id] = RNAMotif(
-                motif_id=motif_id,
-                sequence=sequence,
-                source="synthetic",
-            )
-
-        # Generate synthetic interactions
-        protein_list = list(self.proteins.keys())
-        motif_list = list(self.rna_motifs.keys())
-
-        for _ in range(200):
-            protein_id = random.choice(protein_list)
-            motif_id = random.choice(motif_list)
-
-            protein_seq = self.proteins[protein_id].sequence
-            rna_seq = self.rna_motifs[motif_id].sequence
-
-            pair_key = (protein_seq, rna_seq)
-            if pair_key not in self.protein_rna_pairs:
-                self.interactions.append(
-                    InteractionPair(
-                        protein_id=protein_id,
-                        protein_seq=protein_seq,
-                        rna_seq=rna_seq,
-                        label=1,
-                        source="synthetic",
-                    )
-                )
-                self.protein_rna_pairs.add(pair_key)
-
-        logger.info(f"  ✓ Created {len(self.proteins)} synthetic proteins")
-        logger.info(f"  ✓ Created {len(self.rna_motifs)} synthetic RNA motifs")
-        logger.info(f"  ✓ Created {len(self.interactions)} synthetic interactions")
 
     def _print_summary(self, features: Dict[str, Any]) -> None:
         """Print summary of prepared data"""

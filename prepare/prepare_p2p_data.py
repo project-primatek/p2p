@@ -732,10 +732,11 @@ class PPIDataPreparer:
 
         # Check if we have enough data
         if len(self.interactions) == 0:
-            logger.warning(
-                "No interactions found! Creating synthetic data for testing..."
+            raise ValueError(
+                "No interactions found! Please download real data first using:\n"
+                "  python -m download.download_pro --species 'Homo sapiens' --include-string\n"
+                "Synthetic data generation has been disabled."
             )
-            self._create_synthetic_data()
 
         # Generate negative samples
         self.generate_negative_samples()
@@ -760,41 +761,6 @@ class PPIDataPreparer:
             "test_size": len(split.test_pairs),
             "output_dir": str(self.output_dir),
         }
-
-    def _create_synthetic_data(self) -> None:
-        """Create synthetic data for testing when no real data is available"""
-        logger.info("Creating synthetic protein data for testing...")
-
-        # Generate synthetic proteins
-        for i in range(100):
-            protein_id = f"SYNTH_{i:04d}"
-            length = random.randint(100, 500)
-            sequence = "".join(random.choices(list(self.AMINO_ACIDS), k=length))
-
-            self.proteins[protein_id] = ProteinInfo(
-                uniprot_id=protein_id,
-                sequence=sequence,
-                gene_name=f"GENE_{i}",
-            )
-
-        # Generate synthetic interactions
-        protein_list = list(self.proteins.keys())
-        for _ in range(200):
-            p1, p2 = random.sample(protein_list, 2)
-            score = random.uniform(0.5, 1.0)
-
-            self.interactions.append(
-                InteractionPair(
-                    protein1_id=p1,
-                    protein2_id=p2,
-                    score=score,
-                    label=1,
-                    source="synthetic",
-                )
-            )
-
-        logger.info(f"  ✓ Created {len(self.proteins)} synthetic proteins")
-        logger.info(f"  ✓ Created {len(self.interactions)} synthetic interactions")
 
     def _print_summary(self, features: Dict[str, Any]) -> None:
         """Print summary of prepared data"""
